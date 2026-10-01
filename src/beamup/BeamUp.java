@@ -1,4 +1,4 @@
-package example;
+package beamup;
 
 import arc.*;
 import arc.util.*;
@@ -6,10 +6,10 @@ import mindustry.game.EventType.*;
 import mindustry.mod.*;
 import mindustry.ui.dialogs.*;
 
-public class ExampleJavaMod extends Mod{
+public class BeamUp extends Mod{
 
-    public ExampleJavaMod(){
-        Log.info("Loaded ExampleJavaMod constructor.");
+    public BeamUp(){
+        Log.info("Loaded BeamUp constructor.");
 
         //listen for game load event
         Events.on(ClientLoadEvent.class, e -> {
