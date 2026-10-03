@@ -3,6 +3,7 @@ package beamup;
 import arc.Core;
 import arc.graphics.Color;
 import arc.graphics.g2d.*;
+import arc.math.geom.Point2;
 import arc.struct.*;
 import arc.util.Time;
 import arc.util.io.*;
@@ -12,6 +13,7 @@ import mindustry.type.Category;
 import mindustry.type.Item;
 import mindustry.type.ItemStack;
 import mindustry.world.Block;
+import mindustry.world.blocks.ConstructBlock;
 
 import static mindustry.Vars.*;
 
@@ -43,8 +45,19 @@ public class LaserTower extends Block{
             int index = tower.links.indexOf(pos);
             if(index != -1){
                 tower.links.removeIndex(index);
+                tower.confirmed.remove(pos);
             }else if(tower.links.size < maxLinks){
                 tower.links.add(pos);
+            }
+        });
+
+        config(Point2[].class, (LaserTowerBuild tower, Point2[] offsets) -> {
+            tower.links.clear();
+            tower.confirmed.clear();
+            for(Point2 p : offsets){
+                if(tower.links.size >= maxLinks) break;
+                if(p.x * p.x + p.y * p.y > laserRange * laserRange) continue;
+                tower.links.add(Point2.pack(p.x + tower.tileX(), p.y + tower.tileY()));
             }
         });
     }
@@ -74,7 +87,9 @@ public class LaserTower extends Block{
 
     public class LaserTowerBuild extends Building{
         public IntSeq links = new IntSeq();
+        IntSet confirmed = new IntSet();
         float[] flash = new float[maxLinks];
+        float charge;
         int nextLink = 0;
         int lastItem = 0;
 
@@ -94,7 +109,12 @@ public class LaserTower extends Block{
 
         @Override
         public boolean onConfigureBuildTapped(Building other){
-            if(other == this || !makesLinks()) return false;
+            if(!makesLinks()) return false;
+            if(other == this){
+                configure(new Point2[0]);
+                deselect();
+                return false;
+            }
             if(links.indexOf(other.pos()) != -1){
                 configure(other.pos());
             }else if(links.size < maxLinks
@@ -127,28 +147,25 @@ public class LaserTower extends Block{
             return false;
         }
 
-        float charge;
-
-        @Override
-        public void updateTile(){
-            float interval = 60f / itemsPerSecond;
-            charge = Math.min(charge + Time.delta, interval * 2f);
-
-            if(role == Role.output){
-                while(charge >= interval && dump()) charge -= interval;
-                return;
-            }
-
-            for(int i = 0; i < flash.length; i++){
-                flash[i] = Math.max(0f, flash[i] - Time.delta / 20f);
-            }
-
+        private void pruneLinks(){
             for(int i = links.size - 1; i >= 0; i--){
-                Building b = world.build(links.get(i));
-                if(b == null || !b.isValid()) links.removeIndex(i);
+                int pos = links.get(i);
+                Building b = world.build(pos);
+                if(b instanceof LaserTowerBuild && b.isValid()){
+                    if(((LaserTower)b.block).acceptsLinks()){
+                        confirmed.add(pos);
+                    }else{
+                        links.removeIndex(i);
+                    }
+                }else if(b == null || !b.isValid()){
+                    if(confirmed.contains(pos)){
+                        links.removeIndex(i);
+                        confirmed.remove(pos);
+                    }
+                }else if(!(b.block instanceof ConstructBlock)){
+                    links.removeIndex(i);
+                }
             }
-
-            while(charge >= interval && sendOne()) charge -= interval;
         }
 
         private boolean sendOne(){
@@ -157,6 +174,7 @@ public class LaserTower extends Block{
             for(int l = 0; l < links.size; l++){
                 int linkIndex = (nextLink + l) % links.size;
                 Building target = world.build(links.get(linkIndex));
+                if(target == null || !target.isValid()) continue;
                 for(int i = 0; i < all.size; i++){
                     Item item = all.get((lastItem + i) % all.size);
                     if(items.get(item) > 0 && target.acceptItem(this, item)){
@@ -170,6 +188,46 @@ public class LaserTower extends Block{
                 }
             }
             return false;
+        }
+
+        private boolean dumpOne(){
+            var all = content.items();
+            for(int i = 0; i < all.size; i++){
+                Item item = all.get((lastItem + i) % all.size);
+                if(items.get(item) > 0 && dump(item)){
+                    lastItem = (lastItem + i + 1) % all.size;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public void updateTile(){
+            float interval = 60f / itemsPerSecond;
+            charge = Math.min(charge + Time.delta, interval * 2f);
+
+            if(role == Role.output){
+                while(charge >= interval && dumpOne()) charge -= interval;
+                return;
+            }
+
+            for(int i = 0; i < flash.length; i++){
+                flash[i] = Math.max(0f, flash[i] - Time.delta / 20f);
+            }
+
+            pruneLinks();
+
+            while(charge >= interval && sendOne()) charge -= interval;
+        }
+
+        @Override
+        public Object config(){
+            Point2[] out = new Point2[links.size];
+            for(int i = 0; i < out.length; i++){
+                out[i] = Point2.unpack(links.get(i)).sub(tile.x, tile.y);
+            }
+            return out;
         }
 
         @Override
