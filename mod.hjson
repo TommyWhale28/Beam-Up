@@ -11,7 +11,7 @@ author: "TommyWhale28"
 main: "beamup.BeamUp"
 
 #the mod description as seen in the mod dialog
-description: "A Mindustry mod that adds laser towers to transport items."
+description: "A Mindustry mod that adds towers to transport items using laser links. Desktop Only Java Mod. For 160.5"
 
 #the mod version
 version: 1.0.0
