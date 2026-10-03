@@ -1,25 +1,34 @@
 package beamup;
 
+import arc.Core;
+import arc.graphics.Color;
 import arc.graphics.g2d.*;
+import arc.math.geom.Point2;
 import arc.struct.*;
-import mindustry.content.Items;
+import arc.util.Time;
+import arc.util.io.*;
 import mindustry.gen.Building;
 import mindustry.graphics.*;
 import mindustry.type.Category;
 import mindustry.type.Item;
+import mindustry.type.ItemStack;
 import mindustry.world.Block;
+import mindustry.world.blocks.ConstructBlock;
 
 import static mindustry.Vars.*;
-import static mindustry.type.ItemStack.with;
 
 public class LaserTower extends Block{
     public enum Role{ input, transit, output }
 
     public final Role role;
-    public float laserRange = 9.5f; // in tiles, center to center
+    public float laserRange = 9.5f;
     public int maxLinks = 3;
+    public float itemsPerSecond = 10f;
+    public TextureRegion laser, laserEnd;
+    public Color beamColor = Pal.accent;
+    public float laserScale = 0.25f;
 
-    public LaserTower(String name, Role role){
+    public LaserTower(String name, Role role, ItemStack[] cost){
         super(name);
         this.role = role;
         size = 1;
@@ -27,52 +36,72 @@ public class LaserTower extends Block{
         solid = true;
         hasItems = true;
         itemCapacity = 10;
-        configurable = makesLinks(); // output towers have nothing to configure
-        requirements(Category.distribution, with(Items.copper, 1));
+        configurable = makesLinks();
+        requirements(Category.distribution, cost);
 
         buildType = LaserTowerBuild::new;
 
-        // Configuring with a position toggles that link on or off.
         config(Integer.class, (LaserTowerBuild tower, Integer pos) -> {
             int index = tower.links.indexOf(pos);
             if(index != -1){
                 tower.links.removeIndex(index);
+                tower.confirmed.remove(pos);
             }else if(tower.links.size < maxLinks){
                 tower.links.add(pos);
             }
         });
+
+        config(Point2[].class, (LaserTowerBuild tower, Point2[] offsets) -> {
+            tower.links.clear();
+            tower.confirmed.clear();
+            for(Point2 p : offsets){
+                if(tower.links.size >= maxLinks) break;
+                if(p.x * p.x + p.y * p.y > laserRange * laserRange) continue;
+                tower.links.add(Point2.pack(p.x + tower.tileX(), p.y + tower.tileY()));
+            }
+        });
     }
 
-    /** Can this type create outgoing links? */
+    @Override
+    public void load(){
+        super.load();
+        laser = Core.atlas.find("laser");
+        laserEnd = Core.atlas.find("laser-end");
+    }
+
+    @Override
+    public void init(){
+        super.init();
+        updateClipRadius(laserRange * tilesize);
+    }
+
     public boolean makesLinks(){ return role != Role.output; }
 
-    /** Can this type be the target of a link? */
     public boolean acceptsLinks(){ return role != Role.input; }
 
     @Override
     public void drawPlace(int x, int y, int rotation, boolean valid){
         super.drawPlace(x, y, rotation, valid);
-        if(makesLinks()){
-            Drawf.circles(x * tilesize + offset, y * tilesize + offset, laserRange * tilesize, Pal.accent);
-        }
+        Drawf.circles(x * tilesize + offset, y * tilesize + offset, laserRange * tilesize, Pal.accent);
     }
 
     public class LaserTowerBuild extends Building{
         public IntSeq links = new IntSeq();
-        int nextLink = 0; // round-robin position over destinations
-        int lastItem = 0; // round-robin position over item types
+        IntSet confirmed = new IntSet();
+        float[] flash = new float[maxLinks];
+        float charge;
+        int nextLink = 0;
+        int lastItem = 0;
 
         @Override
         public boolean acceptItem(Building source, Item item){
             if(items.get(item) >= itemCapacity) return false;
             if(source instanceof LaserTowerBuild){
-                // towers may only push along a link that points at this tower
                 return acceptsLinks() && ((LaserTowerBuild)source).links.indexOf(pos()) != -1;
             }
-            return role == Role.input; // everything else only feeds input towers
+            return role == Role.input;
         }
 
-        // output towers must not dump into neighbouring towers
         @Override
         public boolean canDump(Building to, Item item){
             return !(to instanceof LaserTowerBuild);
@@ -80,9 +109,14 @@ public class LaserTower extends Block{
 
         @Override
         public boolean onConfigureBuildTapped(Building other){
-            if(other == this || !makesLinks()) return false;
+            if(!makesLinks()) return false;
+            if(other == this){
+                configure(new Point2[0]);
+                deselect();
+                return false;
+            }
             if(links.indexOf(other.pos()) != -1){
-                configure(other.pos()); // already linked: toggles it off
+                configure(other.pos());
             }else if(links.size < maxLinks
                     && other instanceof LaserTowerBuild
                     && ((LaserTower)other.block).acceptsLinks()
@@ -94,7 +128,6 @@ public class LaserTower extends Block{
             return false;
         }
 
-        /** Searches everything reachable from 'start'; true if it leads back to this tower. */
         private boolean createsLoop(Building start){
             Seq<Building> stack = new Seq<>();
             IntSet seen = new IntSet();
@@ -114,24 +147,34 @@ public class LaserTower extends Block{
             return false;
         }
 
-        @Override
-        public void updateTile(){
-            if(role == Role.output){
-                dump(); // hand buffered items to whatever is next to the tower
-                return;
-            }
-
-            // drop links to destroyed buildings
+        private void pruneLinks(){
             for(int i = links.size - 1; i >= 0; i--){
-                Building b = world.build(links.get(i));
-                if(b == null || !b.isValid()) links.removeIndex(i);
+                int pos = links.get(i);
+                Building b = world.build(pos);
+                if(b instanceof LaserTowerBuild && b.isValid()){
+                    if(((LaserTower)b.block).acceptsLinks()){
+                        confirmed.add(pos);
+                    }else{
+                        links.removeIndex(i);
+                    }
+                }else if(b == null || !b.isValid()){
+                    if(confirmed.contains(pos)){
+                        links.removeIndex(i);
+                        confirmed.remove(pos);
+                    }
+                }else if(!(b.block instanceof ConstructBlock)){
+                    links.removeIndex(i);
+                }
             }
-            if(links.size == 0) return;
+        }
 
+        private boolean sendOne(){
+            if(links.size == 0) return false;
             var all = content.items();
             for(int l = 0; l < links.size; l++){
                 int linkIndex = (nextLink + l) % links.size;
                 Building target = world.build(links.get(linkIndex));
+                if(target == null || !target.isValid()) continue;
                 for(int i = 0; i < all.size; i++){
                     Item item = all.get((lastItem + i) % all.size);
                     if(items.get(item) > 0 && target.acceptItem(this, item)){
@@ -139,10 +182,52 @@ public class LaserTower extends Block{
                         items.remove(item, 1);
                         lastItem = (lastItem + i + 1) % all.size;
                         nextLink = (linkIndex + 1) % links.size;
-                        return; // one item per tick for now; the rate cap comes next
+                        flash[linkIndex] = 1f;
+                        return true;
                     }
                 }
             }
+            return false;
+        }
+
+        private boolean dumpOne(){
+            var all = content.items();
+            for(int i = 0; i < all.size; i++){
+                Item item = all.get((lastItem + i) % all.size);
+                if(items.get(item) > 0 && dump(item)){
+                    lastItem = (lastItem + i + 1) % all.size;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public void updateTile(){
+            float interval = 60f / itemsPerSecond;
+            charge = Math.min(charge + Time.delta, interval * 2f);
+
+            if(role == Role.output){
+                while(charge >= interval && dumpOne()) charge -= interval;
+                return;
+            }
+
+            for(int i = 0; i < flash.length; i++){
+                flash[i] = Math.max(0f, flash[i] - Time.delta / 20f);
+            }
+
+            pruneLinks();
+
+            while(charge >= interval && sendOne()) charge -= interval;
+        }
+
+        @Override
+        public Object config(){
+            Point2[] out = new Point2[links.size];
+            for(int i = 0; i < out.length; i++){
+                out[i] = Point2.unpack(links.get(i)).sub(tile.x, tile.y);
+            }
+            return out;
         }
 
         @Override
@@ -155,13 +240,36 @@ public class LaserTower extends Block{
         public void draw(){
             super.draw();
             Draw.z(Layer.power);
-            Lines.stroke(1.5f);
-            Draw.color(Pal.accent);
             for(int i = 0; i < links.size; i++){
                 Building target = world.build(links.get(i));
-                if(target != null) Lines.line(x, y, target.x, target.y);
+                if(target == null) continue;
+
+                Draw.color(beamColor, 0.45f + 0.55f * flash[i]);
+                Drawf.laser(laser, laserEnd, x, y, target.x, target.y, laserScale);
             }
             Draw.reset();
+        }
+
+        @Override
+        public byte version(){
+            return 1;
+        }
+
+        @Override
+        public void write(Writes write){
+            super.write(write);
+            write.b(links.size);
+            for(int i = 0; i < links.size; i++) write.i(links.get(i));
+        }
+
+        @Override
+        public void read(Reads read, byte revision){
+            super.read(read, revision);
+            links.clear();
+            if(revision >= 1){
+                int count = read.b();
+                for(int i = 0; i < count; i++) links.add(read.i());
+            }
         }
     }
 }
