@@ -1,4 +1,4 @@
-This is a java mod that adds towers that transport items using laser links. The Batchfile is from build.bat, a tool I use to run gradlew.bat and see the results.
+This is a java mod that adds nodes that transport items using laser links. The Batchfile is from build.bat, a tool I use to run gradlew.bat and see the results.
 
 
 
