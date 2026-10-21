@@ -14,7 +14,7 @@ main: "beamup.BeamUp"
 description: "A Mindustry mod that adds nodes to transport items using laser links. Desktop Only Java Mod. For 160.5"
 
 #the mod version
-version: 1.1.0
+version: 1.1.1
 
 #the minimum game build required to run this mod
 minGameVersion: 160.5
